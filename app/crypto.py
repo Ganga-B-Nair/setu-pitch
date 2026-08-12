@@ -8,6 +8,7 @@ ciphertext. Compromising one stored row never exposes the KEK, and
 rotating the KEK only requires re-wrapping DEKs, not re-encrypting data.
 """
 
+import hashlib
 import os
 
 from cryptography.fernet import Fernet
@@ -36,3 +37,11 @@ def wrap_dek(dek: bytes) -> str:
 
 def unwrap_dek(wrapped: str) -> bytes:
     return _kek().decrypt(wrapped.encode())
+
+
+def hash_identifier(value: str) -> str:
+    """Non-reversible SHA-256 hash of a plaintext identifier (e.g. an
+    Aadhaar number), used for privacy-preserving duplicate checks:
+    comparing hashes lets the system detect a repeat registration without
+    ever decrypting anyone's stored value to compare it directly."""
+    return hashlib.sha256(value.encode()).hexdigest()

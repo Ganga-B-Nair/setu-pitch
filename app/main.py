@@ -9,6 +9,7 @@ load_dotenv()
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import auth, chain, crypto
@@ -73,6 +74,13 @@ def _make_qr_base64(data: str) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def _mask_aadhaar(aadhaar_number: str) -> str:
+    return f"XXXX-XXXX-{aadhaar_number[-4:]}"
+
+
+AADHAAR_ALREADY_REGISTERED = "This Aadhaar number is already registered"
+
+
 @app.post("/login", response_model=LoginResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == body.username).first()
@@ -88,21 +96,46 @@ def register_worker(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.get_current_user),
 ):
-    dek = crypto.generate_dek()
-    name_ciphertext = crypto.encrypt_with_dek(dek, body.name)
-    name_dek = crypto.wrap_dek(dek)
+    # Privacy-preserving duplicate check: compare the non-reversible hash
+    # of the Aadhaar number, never the decrypted value itself.
+    aadhaar_hash = crypto.hash_identifier(body.aadhaar_number)
+    existing = db.query(Worker).filter(Worker.aadhaar_hash == aadhaar_hash).first()
+    if existing is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=AADHAAR_ALREADY_REGISTERED)
+
+    name_dek = crypto.generate_dek()
+    name_ciphertext = crypto.encrypt_with_dek(name_dek, body.name)
+    wrapped_name_dek = crypto.wrap_dek(name_dek)
+
+    aadhaar_dek = crypto.generate_dek()
+    aadhaar_ciphertext = crypto.encrypt_with_dek(aadhaar_dek, body.aadhaar_number)
+    wrapped_aadhaar_dek = crypto.wrap_dek(aadhaar_dek)
 
     worker = Worker(
         name_ciphertext=name_ciphertext,
-        name_dek=name_dek,
+        name_dek=wrapped_name_dek,
+        aadhaar_ciphertext=aadhaar_ciphertext,
+        aadhaar_dek=wrapped_aadhaar_dek,
+        aadhaar_hash=aadhaar_hash,
         age=body.age,
         gender=body.gender,
         origin_state=body.origin_state,
     )
     db.add(worker)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Defense in depth against a race between the pre-check above and
+        # this commit: the unique constraint on aadhaar_hash is the real
+        # guarantee against duplicates, the query above is just the fast
+        # path that avoids hitting it in the common case.
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=AADHAAR_ALREADY_REGISTERED)
     db.refresh(worker)
 
+    # Aadhaar is intentionally excluded from the chain's hashed content —
+    # it's a linked identity attribute, not part of the tamper-evident
+    # record trail, and must never appear on-chain even as a hash.
     record_hash = chain.compute_record_hash(
         {"name": body.name, "age": body.age, "gender": body.gender, "origin_state": body.origin_state}
     )
@@ -120,6 +153,7 @@ def get_worker(
 ):
     worker = _worker_or_404(db, token)
     name = crypto.decrypt_with_dek(crypto.unwrap_dek(worker.name_dek), worker.name_ciphertext)
+    aadhaar_number = crypto.decrypt_with_dek(crypto.unwrap_dek(worker.aadhaar_dek), worker.aadhaar_ciphertext)
 
     records_out = []
     for r in worker.records:
@@ -141,6 +175,7 @@ def get_worker(
         age=worker.age,
         gender=worker.gender,
         origin_state=worker.origin_state,
+        aadhaar_number=_mask_aadhaar(aadhaar_number),
         created_at=worker.created_at.isoformat(),
         records=records_out,
     )

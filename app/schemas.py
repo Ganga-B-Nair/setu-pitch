@@ -1,6 +1,9 @@
+import re
 from typing import Optional, List
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+AADHAAR_PATTERN = re.compile(r"^\d{12}$")
 
 
 class LoginRequest(BaseModel):
@@ -18,6 +21,14 @@ class WorkerCreate(BaseModel):
     age: int
     gender: str
     origin_state: str
+    aadhaar_number: str
+
+    @field_validator("aadhaar_number")
+    @classmethod
+    def validate_aadhaar_number(cls, value: str) -> str:
+        if not AADHAAR_PATTERN.match(value):
+            raise ValueError("Aadhaar number must be exactly 12 digits")
+        return value
 
 
 class WorkerCreateResponse(BaseModel):
@@ -47,6 +58,7 @@ class WorkerOut(BaseModel):
     age: int
     gender: str
     origin_state: str
+    aadhaar_number: str  # always masked, e.g. "XXXX-XXXX-1234"
     created_at: str
     records: List[RecordOut]
 

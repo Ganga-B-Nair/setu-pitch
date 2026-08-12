@@ -35,6 +35,12 @@ class Worker(Base):
     token = Column(String, unique=True, nullable=False, index=True, default=lambda: uuid.uuid4().hex)
     name_ciphertext = Column(String, nullable=False)
     name_dek = Column(String, nullable=False)  # wrapped DEK
+    aadhaar_ciphertext = Column(String, nullable=False)
+    aadhaar_dek = Column(String, nullable=False)  # wrapped DEK
+    # Non-reversible hash of the Aadhaar number, indexed and unique so
+    # duplicate registrations can be detected without ever decrypting a
+    # stored Aadhaar number to compare it.
+    aadhaar_hash = Column(String, unique=True, nullable=False, index=True)
     age = Column(Integer, nullable=False)
     gender = Column(String, nullable=False)
     origin_state = Column(String, nullable=False)
